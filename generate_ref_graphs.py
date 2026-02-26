@@ -72,14 +72,19 @@ def load_content_types(path: str) -> list[dict]:
     raise ValueError("Expected a JSON object with 'content_types' or a JSON array")
 
 
+def has_url_field(schema: list) -> bool:
+    return any(fld.get("uid") == "url" for fld in schema)
+
+
 def build_ct_map(content_types: list[dict]) -> dict:
     ct_map = {}
     for ct in content_types:
         uid = ct["uid"]
+        schema = ct.get("schema", [])
         ct_map[uid] = {
             "title": ct.get("title", uid),
-            "schema": ct.get("schema", []),
-            "is_page": ct.get("options", {}).get("is_page", False),
+            "schema": schema,
+            "has_url": has_url_field(schema),
         }
     return ct_map
 
@@ -201,26 +206,26 @@ def assign_positions(node: TreeNode, left_x: float, depth: int):
 # ---------------------------------------------------------------------------
 
 
-def tree_stats(root: TreeNode) -> tuple[int, int, bool]:
+def tree_stats(root: TreeNode) -> tuple[int, int, bool, dict[int, int]]:
     max_depth = 0
     path_count = 0
     has_cycle = False
+    refs_per_depth: dict[int, int] = {}
 
-    def walk(node: TreeNode):
+    def traverse(node: TreeNode):
         nonlocal max_depth, path_count, has_cycle
         max_depth = max(max_depth, node.depth)
         if node.is_cycle:
             has_cycle = True
         if not node.children:
             path_count += 1
-
-    def traverse(node: TreeNode):
-        walk(node)
+        if node.depth > 0:
+            refs_per_depth[node.depth] = refs_per_depth.get(node.depth, 0) + 1
         for child in node.children:
             traverse(child)
 
     traverse(root)
-    return max_depth, path_count, has_cycle
+    return max_depth, path_count, has_cycle, refs_per_depth
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +313,7 @@ def draw_edge(ax, parent: TreeNode, child: TreeNode):
 def render_tree(root: TreeNode, output_dir: str) -> tuple[str, int, int, bool]:
     compute_leaf_counts(root)
     assign_positions(root, 0, 0)
-    max_depth, path_count, has_cycle = tree_stats(root)
+    max_depth, path_count, has_cycle, refs_per_depth = tree_stats(root)
 
     # Figure sizing
     width = max(8, root.leaf_count * H_SPACING + 2)
@@ -325,9 +330,15 @@ def render_tree(root: TreeNode, output_dir: str) -> tuple[str, int, int, bool]:
     title = f"{root.ct_title} \u2014 Reference Tree"
     if not root.children:
         subtitle = "No outgoing references"
+        depth_line = ""
     else:
         cycle_note = "Contains cycles" if has_cycle else "No cycles"
         subtitle = f"Depth: {max_depth} | Paths: {path_count} | {cycle_note}"
+        depth_parts = [
+            f"L{d}: {refs_per_depth[d]} refs"
+            for d in sorted(refs_per_depth)
+        ]
+        depth_line = "  |  ".join(depth_parts)
 
     ax.text(
         root.x,
@@ -350,6 +361,17 @@ def render_tree(root: TreeNode, output_dir: str) -> tuple[str, int, int, bool]:
         color=COLORS["edge_label"],
         fontfamily="sans-serif",
     )
+    if depth_line:
+        ax.text(
+            root.x,
+            0.5,
+            depth_line,
+            ha="center",
+            va="center",
+            fontsize=9,
+            color=COLORS["edge_label"],
+            fontfamily="sans-serif",
+        )
 
     # Draw edges first (behind nodes)
     def draw_edges(node: TreeNode):
@@ -411,7 +433,7 @@ def generate_index(results: list[dict], ct_map: dict, output_dir: str):
         "",
         f"Generated from {len(ct_map)} content types.",
         "",
-        f"## Page Types ({len(results)} diagrams)",
+        f"## Content Types with URL Field ({len(results)} diagrams)",
         "",
         "| Content Type | UID | Outgoing Refs | Max Depth | Cycles |",
         "|---|---|---|---|---|",
@@ -474,8 +496,8 @@ def main():
             total_edges += 1
     print(f"\n  Total unique edges: {total_edges}")
 
-    page_types = [uid for uid, ct in ct_map.items() if ct["is_page"]]
-    print(f"  Page types: {len(page_types)}\n")
+    page_types = [uid for uid, ct in ct_map.items() if ct["has_url"]]
+    print(f"  Types with URL field: {len(page_types)}\n")
 
     results = []
     for uid in sorted(page_types):
