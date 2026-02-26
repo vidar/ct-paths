@@ -18,7 +18,6 @@ curl --location 'https://eu-api.contentstack.com/v3/content_types?include_count=
 --header 'api_key: <apikey>' \
 --header 'authorization: <managementtoken>' \
 --header 'Content-Type: application/json' \
--o types.json
 ```
 
 The script accepts either the full API response (with a `content_types` wrapper) or a plain JSON array of content types.
