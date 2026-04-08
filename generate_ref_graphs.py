@@ -142,7 +142,7 @@ def build_ref_graph(content_types: list[dict]) -> dict[str, list[RefEdge]]:
 # ---------------------------------------------------------------------------
 
 
-def build_ref_tree(root_uid: str, ct_map: dict, ref_graph: dict) -> TreeNode:
+def build_ref_tree(root_uid: str, ct_map: dict, ref_graph: dict, max_depth: int = 2) -> TreeNode:
     root_title = ct_map.get(root_uid, {}).get("title", root_uid)
     root = TreeNode(ct_uid=root_uid, ct_title=root_title, depth=0, is_cycle=False, edge_label="")
 
@@ -169,7 +169,7 @@ def build_ref_tree(root_uid: str, ct_map: dict, ref_graph: dict) -> TreeNode:
                 edge_label=label_str,
             )
             node.children.append(child)
-            if not is_cycle:
+            if not is_cycle and child.depth < max_depth:
                 expand(child, ancestors | {target_uid})
 
     expand(root, {root_uid})
@@ -473,6 +473,7 @@ def main():
     )
     parser.add_argument("--input", required=True, help="Path to content types JSON file")
     parser.add_argument("--output", default="./graphs", help="Output directory for PNGs")
+    parser.add_argument("--max-depth", type=int, default=2, help="Maximum tree depth (default: 2)")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -496,12 +497,12 @@ def main():
             total_edges += 1
     print(f"\n  Total unique edges: {total_edges}")
 
-    page_types = [uid for uid, ct in ct_map.items() if ct["has_url"]]
+    page_types = ["page_wrapper"]
     print(f"  Types with URL field: {len(page_types)}\n")
 
     results = []
     for uid in sorted(page_types):
-        tree = build_ref_tree(uid, ct_map, ref_graph)
+        tree = build_ref_tree(uid, ct_map, ref_graph, max_depth=args.max_depth)
         out_path, max_depth, path_count, has_cycle = render_tree(tree, args.output)
 
         ref_count = len(ref_graph.get(uid, []))
