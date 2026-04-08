@@ -479,6 +479,7 @@ body{background:#0D1117;color:#C9D1D9;font-family:-apple-system,BlinkMacSystemFo
 .node.expandable:hover .node-rect{filter:brightness(1.4)}
 .link{fill:none;stroke:#8B949E;stroke-width:1.5}
 .edge-label{font-size:10px;fill:#8B949E;font-style:italic;pointer-events:none}
+.leaf-counter{font-size:13px;color:#7EE787;font-weight:600}
 </style>
 </head>
 <body>
@@ -494,6 +495,8 @@ body{background:#0D1117;color:#C9D1D9;font-family:-apple-system,BlinkMacSystemFo
     <button id="btn-collapse">Collapse All</button>
     <span class="sep"></span>
     <button id="btn-reset">Reset View</button>
+    <span class="sep"></span>
+    <span id="leaf-count" class="leaf-counter"></span>
   </div>
 </div>
 
@@ -553,6 +556,19 @@ function diag(s, t) {
   return "M"+s.x+","+sy+" C"+s.x+","+my+" "+t.x+","+my+" "+t.x+","+ty;
 }
 
+/* ---- leaf counter ---- */
+var uniformDepth = true;
+function countLeaves() {
+  var c = 0;
+  (function v(n){ if(!n.children||!n.children.length) c++; else n.children.forEach(v); })(root);
+  return c;
+}
+function updateLeafCounter() {
+  var el = document.getElementById("leaf-count");
+  if(uniformDepth){ el.textContent = "Leaves: "+countLeaves(); el.style.display = ""; }
+  else { el.style.display = "none"; }
+}
+
 /* ---- update ---- */
 function update(source) {
   var dur = 400;
@@ -571,6 +587,7 @@ function update(source) {
       if(!d._children || !d._children.length || d.data.isCycle) return;
       d.children = d.children ? null : d._children;
       update(d);
+      uniformDepth = false; updateLeafCounter();
     });
 
   ne.append("rect").attr("class","node-rect").attr("y",-NODE_H/2).attr("height",NODE_H).attr("rx",6).attr("ry",6);
@@ -623,6 +640,7 @@ function setDepth(d) {
   document.getElementById("depth-input").value = d;
   setVisibleDepth(d);
   update(root);
+  uniformDepth = true; updateLeafCounter();
 }
 
 function resetView() {
@@ -646,6 +664,7 @@ document.getElementById("depth-input").onchange = function(){ setDepth(+this.val
 setVisibleDepth(2);
 root.x0 = 0; root.y0 = 0;
 update(root);
+updateLeafCounter();
 requestAnimationFrame(() => requestAnimationFrame(resetView));
 </script>
 </body>
@@ -719,8 +738,7 @@ def main():
         description="Generate reference tree diagrams for Contentstack content types."
     )
     parser.add_argument("--input", required=True, help="Path to content types JSON file")
-    parser.add_argument("--output", default="./graphs", help="Output directory for PNGs")
-    parser.add_argument("--max-depth", type=int, default=2, help="Maximum tree depth (default: 2)")
+    parser.add_argument("--output", default="./graphs", help="Output directory")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -749,17 +767,11 @@ def main():
 
     results = []
     for uid in sorted(page_types):
-        # Interactive HTML (full tree, unlimited depth)
         full_tree = build_ref_tree(uid, ct_map, ref_graph, max_depth=None)
         html_path = generate_html(full_tree, args.output)
         print(f"  Generated: {os.path.basename(html_path)}")
 
-        # Static PNG (depth-limited)
-        tree = build_ref_tree(uid, ct_map, ref_graph, max_depth=args.max_depth)
-        out_path, max_depth, path_count, has_cycle = render_tree(tree, args.output)
-
-        ref_count = len(ref_graph.get(uid, []))
-        # Count unique targets for the summary
+        max_depth, _, has_cycle, _ = tree_stats(full_tree)
         unique_targets = len(set(e.to_ct for e in ref_graph.get(uid, [])))
         results.append(
             {
@@ -770,7 +782,6 @@ def main():
                 "has_cycle": has_cycle,
             }
         )
-        print(f"  Generated: {os.path.basename(out_path)}")
 
     generate_index(results, ct_map, args.output)
     print(f"  Generated: _index.md")
