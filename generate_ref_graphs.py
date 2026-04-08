@@ -480,6 +480,10 @@ body{background:#0D1117;color:#C9D1D9;font-family:-apple-system,BlinkMacSystemFo
 .link{fill:none;stroke:#8B949E;stroke-width:1.5}
 .edge-label{font-size:10px;fill:#8B949E;font-style:italic;pointer-events:none}
 .leaf-counter{font-size:13px;color:#7EE787;font-weight:600}
+#ignore-tags{display:flex;gap:4px;flex-wrap:wrap}
+.ignore-tag{background:#F8514933;border:1px solid #F85149;color:#F85149;padding:2px 8px;border-radius:4px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px}
+.ignore-tag:hover{background:#F8514966}
+#ignore-select{background:#0D1117;border:1px solid #30363D;color:#C9D1D9;padding:3px 6px;border-radius:4px;font-size:13px}
 </style>
 </head>
 <body>
@@ -497,6 +501,10 @@ body{background:#0D1117;color:#C9D1D9;font-family:-apple-system,BlinkMacSystemFo
     <button id="btn-reset">Reset View</button>
     <span class="sep"></span>
     <span id="leaf-count" class="leaf-counter"></span>
+    <span class="sep"></span>
+    <label>Ignore:</label>
+    <select id="ignore-select"><option value="">+ Add...</option></select>
+    <div id="ignore-tags"></div>
   </div>
 </div>
 
@@ -520,7 +528,7 @@ const CHAR_W = 8;
 const NODE_PAD = 24;
 
 /* ---- hierarchy ---- */
-const root = d3.hierarchy(TREE_DATA);
+let root = d3.hierarchy(TREE_DATA);
 let idCtr = 0;
 root.each(d => { d.id = idCtr++; });
 root.each(d => { d._children = d.children || null; });
@@ -659,6 +667,66 @@ document.getElementById("btn-expand").onclick = () => setDepth(FULL_DEPTH);
 document.getElementById("btn-collapse").onclick = () => setDepth(0);
 document.getElementById("btn-reset").onclick = resetView;
 document.getElementById("depth-input").onchange = function(){ setDepth(+this.value); };
+
+/* ---- ignore filter ---- */
+var ignoredTypes = new Set();
+var allTypes = new Map();
+(function ct(n){ if(!allTypes.has(n.uid)) allTypes.set(n.uid, n.title); if(n.children) n.children.forEach(ct); })(TREE_DATA);
+
+function filterTree(node) {
+  var kids = (node.children||[]).filter(function(c){ return !ignoredTypes.has(c.uid); }).map(filterTree);
+  return {uid:node.uid,title:node.title,depth:node.depth,isCycle:node.isCycle,edgeLabel:node.edgeLabel,children:kids};
+}
+
+function rebuildTree() {
+  var depth = +document.getElementById("depth-input").value;
+  var filtered = filterTree(TREE_DATA);
+  root = d3.hierarchy(filtered);
+  idCtr = 0;
+  root.each(function(d){ d.id = idCtr++; });
+  root.each(function(d){ d._children = d.children || null; });
+  nodeGroup.selectAll("*").remove();
+  linkGroup.selectAll("*").remove();
+  labelGroup.selectAll("*").remove();
+  setVisibleDepth(depth);
+  uniformDepth = true;
+  root.x0 = 0; root.y0 = 0;
+  update(root);
+  updateLeafCounter();
+  requestAnimationFrame(function(){ requestAnimationFrame(resetView); });
+}
+
+function updateIgnoreTags() {
+  var container = document.getElementById("ignore-tags");
+  var sel = document.getElementById("ignore-select");
+  container.innerHTML = "";
+  ignoredTypes.forEach(function(uid) {
+    var tag = document.createElement("span");
+    tag.className = "ignore-tag";
+    tag.textContent = (allTypes.get(uid)||uid) + " \u00d7";
+    tag.onclick = function(){ ignoredTypes.delete(uid); updateIgnoreTags(); rebuildTree(); };
+    container.appendChild(tag);
+  });
+  sel.disabled = ignoredTypes.size >= 5;
+  Array.from(sel.options).forEach(function(opt){ if(opt.value) opt.disabled = ignoredTypes.has(opt.value); });
+}
+
+(function() {
+  var sel = document.getElementById("ignore-select");
+  var sorted = Array.from(allTypes.entries()).filter(function(e){ return e[0] !== TREE_DATA.uid; }).sort(function(a,b){ return a[1].localeCompare(b[1]); });
+  sorted.forEach(function(e) {
+    var opt = document.createElement("option");
+    opt.value = e[0]; opt.textContent = e[1];
+    sel.appendChild(opt);
+  });
+  sel.onchange = function() {
+    if(!this.value || ignoredTypes.size >= 5){ this.value = ""; return; }
+    ignoredTypes.add(this.value);
+    this.value = "";
+    updateIgnoreTags();
+    rebuildTree();
+  };
+})();
 
 /* ---- init ---- */
 setVisibleDepth(2);
