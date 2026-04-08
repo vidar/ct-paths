@@ -142,7 +142,7 @@ def build_ref_graph(content_types: list[dict]) -> dict[str, list[RefEdge]]:
 # ---------------------------------------------------------------------------
 
 
-def build_ref_tree(root_uid: str, ct_map: dict, ref_graph: dict, max_depth: int = 2) -> TreeNode:
+def build_ref_tree(root_uid: str, ct_map: dict, ref_graph: dict, max_depth: int | None = 2) -> TreeNode:
     root_title = ct_map.get(root_uid, {}).get("title", root_uid)
     root = TreeNode(ct_uid=root_uid, ct_title=root_title, depth=0, is_cycle=False, edge_label="")
 
@@ -169,7 +169,7 @@ def build_ref_tree(root_uid: str, ct_map: dict, ref_graph: dict, max_depth: int 
                 edge_label=label_str,
             )
             node.children.append(child)
-            if not is_cycle and child.depth < max_depth:
+            if not is_cycle and (max_depth is None or child.depth < max_depth):
                 expand(child, ancestors | {target_uid})
 
     expand(root, {root_uid})
@@ -423,6 +423,253 @@ def render_tree(root: TreeNode, output_dir: str) -> tuple[str, int, int, bool]:
 
 
 # ---------------------------------------------------------------------------
+# Interactive HTML generation
+# ---------------------------------------------------------------------------
+
+
+def tree_to_dict(node: TreeNode) -> dict:
+    """Serialize a TreeNode to a JSON-compatible dict."""
+    return {
+        "uid": node.ct_uid,
+        "title": node.ct_title,
+        "depth": node.depth,
+        "isCycle": node.is_cycle,
+        "edgeLabel": node.edge_label,
+        "children": [tree_to_dict(c) for c in node.children],
+    }
+
+
+def get_tree_max_depth(node: TreeNode) -> int:
+    """Return the maximum depth in the tree."""
+    if not node.children:
+        return node.depth
+    return max(get_tree_max_depth(c) for c in node.children)
+
+
+_HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>__TITLE__ — Reference Tree</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0D1117;color:#C9D1D9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;overflow:hidden;height:100vh}
+
+#header{position:fixed;top:0;left:0;right:0;z-index:100;background:#161B22;border-bottom:1px solid #30363D;padding:10px 20px;display:flex;align-items:center;gap:24px}
+#header h1{font-size:15px;font-weight:600;color:#58A6FF;white-space:nowrap}
+
+.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.controls label{font-size:13px;color:#8B949E;margin-right:2px}
+.controls input[type="number"]{width:48px;background:#0D1117;border:1px solid #30363D;color:#C9D1D9;padding:3px 6px;border-radius:4px;font-size:13px;text-align:center;-moz-appearance:textfield}
+.controls input[type="number"]::-webkit-outer-spin-button,
+.controls input[type="number"]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.controls button{background:#21262D;border:1px solid #30363D;color:#C9D1D9;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:13px;line-height:1.5}
+.controls button:hover{background:#30363D;border-color:#8B949E}
+.sep{width:1px;height:20px;background:#30363D;margin:0 4px}
+
+#chart{position:fixed;top:44px;left:0;right:0;bottom:0}
+
+#legend{position:fixed;bottom:16px;left:16px;z-index:100;background:#161B22;border:1px solid #30363D;border-radius:8px;padding:10px 14px;font-size:11px}
+.legend-item{display:flex;align-items:center;gap:8px;margin:3px 0}
+.legend-swatch{width:14px;height:14px;border-radius:3px;border:2px solid;flex-shrink:0}
+
+.node{cursor:default}
+.node.expandable{cursor:pointer}
+.node.expandable:hover .node-rect{filter:brightness(1.4)}
+.link{fill:none;stroke:#8B949E;stroke-width:1.5}
+.edge-label{font-size:10px;fill:#8B949E;font-style:italic;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>__TITLE__ — Reference Tree</h1>
+  <div class="controls">
+    <label>Depth:</label>
+    <button id="btn-minus">&#x2212;</button>
+    <input type="number" id="depth-input" value="2" min="0" max="__MAX_DEPTH__">
+    <button id="btn-plus">+</button>
+    <span class="sep"></span>
+    <button id="btn-expand">Expand All</button>
+    <button id="btn-collapse">Collapse All</button>
+    <span class="sep"></span>
+    <button id="btn-reset">Reset View</button>
+  </div>
+</div>
+
+<div id="chart"></div>
+
+<div id="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#58A6FF33;border-color:#58A6FF"></div>Root</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#7EE78733;border-color:#7EE787"></div>Intermediate</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#D2A8FF33;border-color:#D2A8FF"></div>Leaf</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#F8514933;border-color:#F85149;border-style:dashed"></div>Cycle</div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+const TREE_DATA = __TREE_DATA__;
+const FULL_DEPTH = __MAX_DEPTH__;
+
+const COLORS = {root:"#58A6FF",intermediate:"#7EE787",leaf:"#D2A8FF",cycle:"#F85149",text:"#FFFFFF",edge:"#8B949E",bg:"#0D1117"};
+const NODE_H = 32;
+const CHAR_W = 8;
+const NODE_PAD = 24;
+
+/* ---- hierarchy ---- */
+const root = d3.hierarchy(TREE_DATA);
+let idCtr = 0;
+root.each(d => { d.id = idCtr++; });
+root.each(d => { d._children = d.children || null; });
+
+const layout = d3.tree().nodeSize([200, 120]);
+
+/* ---- svg + zoom ---- */
+const svg = d3.select("#chart").append("svg").attr("width","100%").attr("height","100%");
+const g = svg.append("g");
+const zoomBehavior = d3.zoom().scaleExtent([0.05, 4]).on("zoom", e => g.attr("transform", e.transform));
+svg.call(zoomBehavior);
+
+const linkGroup = g.append("g");
+const labelGroup = g.append("g");
+const nodeGroup = g.append("g");
+
+/* ---- helpers ---- */
+function nw(d) { var t = d.data.isCycle ? d.data.title + " \u21BA" : d.data.title; return Math.max(100, t.length * CHAR_W + NODE_PAD); }
+function nc(d) { if(d.depth===0) return COLORS.root; if(d.data.isCycle) return COLORS.cycle; if(d._children && d._children.length) return COLORS.intermediate; return COLORS.leaf; }
+function hasHidden(d) { return d._children && d._children.length > 0 && !d.children; }
+
+function visitAll(node, fn) { fn(node); if(node._children) node._children.forEach(c => visitAll(c, fn)); }
+
+function setVisibleDepth(depth) {
+  visitAll(root, d => {
+    if(d._children && d._children.length > 0)
+      d.children = d.depth < depth ? d._children : null;
+  });
+}
+
+function diag(s, t) {
+  var sy = s.y + NODE_H/2, ty = t.y - NODE_H/2, my = (sy+ty)/2;
+  return "M"+s.x+","+sy+" C"+s.x+","+my+" "+t.x+","+my+" "+t.x+","+ty;
+}
+
+/* ---- update ---- */
+function update(source) {
+  var dur = 400;
+  layout(root);
+
+  var nodes = root.descendants();
+  var links = root.links();
+
+  /* nodes */
+  var node = nodeGroup.selectAll("g.node").data(nodes, d => d.id);
+
+  var ne = node.enter().append("g").attr("class","node")
+    .attr("transform","translate("+(source.x0||0)+","+(source.y0||0)+")")
+    .style("opacity",0)
+    .on("click", (ev, d) => {
+      if(!d._children || !d._children.length || d.data.isCycle) return;
+      d.children = d.children ? null : d._children;
+      update(d);
+    });
+
+  ne.append("rect").attr("class","node-rect").attr("y",-NODE_H/2).attr("height",NODE_H).attr("rx",6).attr("ry",6);
+  ne.append("text").attr("class","node-title").attr("text-anchor","middle").attr("dy","0.35em")
+    .attr("fill",COLORS.text).attr("font-size","12px").attr("font-weight","bold")
+    .attr("font-family","-apple-system,BlinkMacSystemFont,sans-serif").attr("pointer-events","none");
+  ne.append("circle").attr("class","badge-circle");
+  ne.append("text").attr("class","badge-text").attr("text-anchor","middle").attr("pointer-events","none");
+  ne.append("title");
+
+  var nu = ne.merge(node);
+  nu.classed("expandable", d => d._children && d._children.length > 0 && !d.data.isCycle);
+  nu.transition().duration(dur).attr("transform", d => "translate("+d.x+","+d.y+")").style("opacity",1);
+
+  nu.select(".node-rect").attr("x", d => -nw(d)/2).attr("width", d => nw(d))
+    .attr("fill", d => nc(d)+"33").attr("stroke", d => nc(d)).attr("stroke-width",2)
+    .attr("stroke-dasharray", d => d.data.isCycle ? "6,3" : "none");
+  nu.select(".node-title").text(d => d.data.isCycle ? d.data.title+" \u21BA" : d.data.title);
+  nu.select("title").text(d => d.data.title+" ("+d.data.uid+")");
+
+  nu.select(".badge-circle").attr("cy",NODE_H/2+10).attr("r", d => hasHidden(d)?9:0).attr("fill", d => nc(d));
+  nu.select(".badge-text").attr("y",NODE_H/2+10).attr("dy","0.35em").attr("font-size","9px").attr("font-weight","bold").attr("fill",COLORS.bg)
+    .text(d => hasHidden(d) ? "+"+d._children.length : "");
+
+  node.exit().transition().duration(dur)
+    .attr("transform","translate("+source.x+","+source.y+")").style("opacity",0).remove();
+
+  /* links */
+  var link = linkGroup.selectAll("path.link").data(links, d => d.target.id);
+  var o0 = {x: source.x0||0, y: source.y0||0};
+  var le = link.enter().append("path").attr("class","link").attr("d", diag(o0,o0)).style("opacity",0);
+  le.merge(link).transition().duration(dur).attr("d", d => diag(d.source, d.target)).style("opacity",1)
+    .attr("stroke-dasharray", d => d.target.data.isCycle ? "6,3" : "none");
+  link.exit().transition().duration(dur).attr("d", diag({x:source.x,y:source.y},{x:source.x,y:source.y})).style("opacity",0).remove();
+
+  /* edge labels */
+  var el = labelGroup.selectAll("text.edge-label").data(links.filter(d => d.target.data.edgeLabel), d => d.target.id);
+  var ele = el.enter().append("text").attr("class","edge-label").attr("text-anchor","middle").attr("x",source.x0||0).attr("y",source.y0||0).style("opacity",0);
+  ele.merge(el).transition().duration(dur)
+    .attr("x", d => (d.source.x+d.target.x)/2).attr("y", d => (d.source.y+d.target.y)/2+4)
+    .style("opacity",1).text(d => d.target.data.edgeLabel);
+  el.exit().transition().duration(dur).style("opacity",0).remove();
+
+  nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
+}
+
+/* ---- controls ---- */
+function setDepth(d) {
+  d = Math.max(0, Math.min(FULL_DEPTH, d));
+  document.getElementById("depth-input").value = d;
+  setVisibleDepth(d);
+  update(root);
+}
+
+function resetView() {
+  var b = g.node().getBBox();
+  var p = svg.node().getBoundingClientRect();
+  if(b.width === 0 || b.height === 0) return;
+  var s = Math.min(p.width/(b.width+120), p.height/(b.height+120), 1.5);
+  var tx = p.width/2 - (b.x + b.width/2)*s;
+  var ty = p.height/2 - (b.y + b.height/2)*s;
+  svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
+}
+
+document.getElementById("btn-minus").onclick = () => setDepth(+document.getElementById("depth-input").value - 1);
+document.getElementById("btn-plus").onclick = () => setDepth(+document.getElementById("depth-input").value + 1);
+document.getElementById("btn-expand").onclick = () => setDepth(FULL_DEPTH);
+document.getElementById("btn-collapse").onclick = () => setDepth(0);
+document.getElementById("btn-reset").onclick = resetView;
+document.getElementById("depth-input").onchange = function(){ setDepth(+this.value); };
+
+/* ---- init ---- */
+setVisibleDepth(2);
+root.x0 = 0; root.y0 = 0;
+update(root);
+requestAnimationFrame(() => requestAnimationFrame(resetView));
+</script>
+</body>
+</html>"""
+
+
+def generate_html(root: TreeNode, output_dir: str) -> str:
+    """Generate an interactive HTML visualization of the reference tree."""
+    data_json = json.dumps(tree_to_dict(root), indent=2)
+    max_depth = get_tree_max_depth(root)
+
+    html = _HTML_TEMPLATE
+    html = html.replace("__TREE_DATA__", data_json)
+    html = html.replace("__TITLE__", root.ct_title)
+    html = html.replace("__MAX_DEPTH__", str(max_depth))
+
+    output_path = os.path.join(output_dir, f"{root.ct_uid}_reference_tree.html")
+    with open(output_path, "w") as f:
+        f.write(html)
+
+    return output_path
+
+
+# ---------------------------------------------------------------------------
 # Index generation
 # ---------------------------------------------------------------------------
 
@@ -502,6 +749,12 @@ def main():
 
     results = []
     for uid in sorted(page_types):
+        # Interactive HTML (full tree, unlimited depth)
+        full_tree = build_ref_tree(uid, ct_map, ref_graph, max_depth=None)
+        html_path = generate_html(full_tree, args.output)
+        print(f"  Generated: {os.path.basename(html_path)}")
+
+        # Static PNG (depth-limited)
         tree = build_ref_tree(uid, ct_map, ref_graph, max_depth=args.max_depth)
         out_path, max_depth, path_count, has_cycle = render_tree(tree, args.output)
 
