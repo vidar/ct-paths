@@ -533,7 +533,7 @@ let idCtr = 0;
 root.each(d => { d.id = idCtr++; });
 root.each(d => { d._children = d.children || null; });
 
-const layout = d3.tree().nodeSize([200, 120]).separation(function(a,b){ var s=1/(1+a.depth*0.3); return (a.parent===b.parent?1:2)*s; });
+const layout = d3.tree().nodeSize([140, 120]);
 
 /* ---- svg + zoom ---- */
 const svg = d3.select("#chart").append("svg").attr("width","100%").attr("height","100%");
