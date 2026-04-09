@@ -500,6 +500,8 @@ body{background:#0D1117;color:#C9D1D9;font-family:-apple-system,BlinkMacSystemFo
     <span class="sep"></span>
     <button id="btn-reset">Reset View</button>
     <span class="sep"></span>
+    <button id="btn-orient">Top-Down</button>
+    <span class="sep"></span>
     <span id="leaf-count" class="leaf-counter"></span>
     <span class="sep"></span>
     <label>Ignore:</label>
@@ -526,6 +528,10 @@ const COLORS = {root:"#58A6FF",intermediate:"#7EE787",leaf:"#D2A8FF",cycle:"#F85
 const NODE_H = 32;
 const CHAR_W = 8;
 const NODE_PAD = 24;
+var horizontal = true;
+function rx(d){ return horizontal ? d.y : d.x; }
+function ry(d){ return horizontal ? d.x : d.y; }
+function rxy(obj){ return {rx: horizontal ? obj.y : obj.x, ry: horizontal ? obj.x : obj.y}; }
 
 /* ---- hierarchy ---- */
 let root = d3.hierarchy(TREE_DATA);
@@ -533,7 +539,9 @@ let idCtr = 0;
 root.each(d => { d.id = idCtr++; });
 root.each(d => { d._children = d.children || null; });
 
-const layout = d3.tree().nodeSize([140, 120]);
+const layout = d3.tree();
+function applyLayout(){ layout.nodeSize(horizontal ? [50,250] : [140,120]); }
+applyLayout();
 
 /* ---- svg + zoom ---- */
 const svg = d3.select("#chart").append("svg").attr("width","100%").attr("height","100%");
@@ -560,8 +568,11 @@ function setVisibleDepth(depth) {
 }
 
 function diag(s, t) {
-  var sy = s.y + NODE_H/2, ty = t.y - NODE_H/2, my = (sy+ty)/2;
-  return "M"+s.x+","+sy+" C"+s.x+","+my+" "+t.x+","+my+" "+t.x+","+ty;
+  var sx = rx(s), sy = ry(s), tx = rx(t), ty = ry(t);
+  var m = horizontal ? (sx+tx)/2 : (sy+ty)/2;
+  return horizontal
+    ? "M"+sx+","+sy+" C"+m+","+sy+" "+m+","+ty+" "+tx+","+ty
+    : "M"+sx+","+sy+" C"+sx+","+m+" "+tx+","+m+" "+tx+","+ty;
 }
 
 /* ---- leaf counter ---- */
@@ -588,8 +599,9 @@ function update(source) {
   /* nodes */
   var node = nodeGroup.selectAll("g.node").data(nodes, d => d.id);
 
+  var s0 = rxy({x:source.x0||0,y:source.y0||0});
   var ne = node.enter().append("g").attr("class","node")
-    .attr("transform","translate("+(source.x0||0)+","+(source.y0||0)+")")
+    .attr("transform","translate("+s0.rx+","+s0.ry+")")
     .style("opacity",0)
     .on("click", (ev, d) => {
       if(!d._children || !d._children.length || d.data.isCycle) return;
@@ -608,7 +620,7 @@ function update(source) {
 
   var nu = ne.merge(node);
   nu.classed("expandable", d => d._children && d._children.length > 0 && !d.data.isCycle);
-  nu.transition().duration(dur).attr("transform", d => "translate("+d.x+","+d.y+")").style("opacity",1);
+  nu.transition().duration(dur).attr("transform", d => "translate("+rx(d)+","+ry(d)+")").style("opacity",1);
 
   nu.select(".node-rect").attr("x", d => -nw(d)/2).attr("width", d => nw(d))
     .attr("fill", d => nc(d)+"33").attr("stroke", d => nc(d)).attr("stroke-width",2)
@@ -616,12 +628,12 @@ function update(source) {
   nu.select(".node-title").text(d => d.data.isCycle ? d.data.title+" \u21BA" : d.data.title);
   nu.select("title").text(d => d.data.title+" ("+d.data.uid+")");
 
-  nu.select(".badge-circle").attr("cy",NODE_H/2+10).attr("r", d => hasHidden(d)?9:0).attr("fill", d => nc(d));
-  nu.select(".badge-text").attr("y",NODE_H/2+10).attr("dy","0.35em").attr("font-size","9px").attr("font-weight","bold").attr("fill",COLORS.bg)
+  nu.select(".badge-circle").attr("cx", d => horizontal?nw(d)/2+10:0).attr("cy", d => horizontal?0:NODE_H/2+10).attr("r", d => hasHidden(d)?9:0).attr("fill", d => nc(d));
+  nu.select(".badge-text").attr("x", d => horizontal?nw(d)/2+10:0).attr("y", d => horizontal?0:NODE_H/2+10).attr("dy","0.35em").attr("font-size","9px").attr("font-weight","bold").attr("fill",COLORS.bg)
     .text(d => hasHidden(d) ? "+"+d._children.length : "");
 
   node.exit().transition().duration(dur)
-    .attr("transform","translate("+source.x+","+source.y+")").style("opacity",0).remove();
+    .attr("transform","translate("+rx(source)+","+ry(source)+")").style("opacity",0).remove();
 
   /* links */
   var link = linkGroup.selectAll("path.link").data(links, d => d.target.id);
@@ -633,9 +645,9 @@ function update(source) {
 
   /* edge labels */
   var el = labelGroup.selectAll("text.edge-label").data(links.filter(d => d.target.data.edgeLabel), d => d.target.id);
-  var ele = el.enter().append("text").attr("class","edge-label").attr("text-anchor","middle").attr("x",source.x0||0).attr("y",source.y0||0).style("opacity",0);
+  var ele = el.enter().append("text").attr("class","edge-label").attr("text-anchor","middle").attr("x",s0.rx).attr("y",s0.ry).style("opacity",0);
   ele.merge(el).transition().duration(dur)
-    .attr("x", d => (d.source.x+d.target.x)/2).attr("y", d => (d.source.y+d.target.y)/2+4)
+    .attr("x", d => (rx(d.source)+rx(d.target))/2).attr("y", d => (ry(d.source)+ry(d.target))/2)
     .style("opacity",1).text(d => d.target.data.edgeLabel);
   el.exit().transition().duration(dur).style("opacity",0).remove();
 
@@ -667,6 +679,17 @@ document.getElementById("btn-expand").onclick = () => setDepth(FULL_DEPTH);
 document.getElementById("btn-collapse").onclick = () => setDepth(0);
 document.getElementById("btn-reset").onclick = resetView;
 document.getElementById("depth-input").onchange = function(){ setDepth(+this.value); };
+document.getElementById("btn-orient").onclick = function() {
+  horizontal = !horizontal;
+  this.textContent = horizontal ? "Top-Down" : "Left-Right";
+  applyLayout();
+  nodeGroup.selectAll("*").remove();
+  linkGroup.selectAll("*").remove();
+  labelGroup.selectAll("*").remove();
+  root.x0 = 0; root.y0 = 0;
+  update(root);
+  requestAnimationFrame(function(){ requestAnimationFrame(resetView); });
+};
 
 /* ---- ignore filter ---- */
 var ignoredTypes = new Set();
