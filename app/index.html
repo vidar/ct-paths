@@ -42,6 +42,17 @@ select{background:#0D1117;border:1px solid #30363D;color:#C9D1D9;padding:3px 6px
 #ignore-tags{display:flex;gap:4px;flex-wrap:wrap}
 .ignore-tag{background:#F8514933;border:1px solid #F85149;color:#F85149;padding:2px 8px;border-radius:4px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px}
 .ignore-tag:hover{background:#F8514966}
+
+#help{position:fixed;top:56px;right:16px;z-index:100;background:#161B22;border:1px solid #30363D;border-radius:8px;padding:14px 16px;font-size:12px;line-height:1.55;max-width:320px;color:#C9D1D9}
+#help.hidden{display:none}
+#help h2{font-size:12px;font-weight:600;color:#58A6FF;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}
+#help ul{list-style:none;padding:0;margin:0}
+#help li{margin:4px 0}
+#help li b{color:#7EE787;font-weight:600}
+#help .close{position:absolute;top:8px;right:10px;background:none;border:none;color:#8B949E;cursor:pointer;font-size:16px;line-height:1;padding:2px 6px}
+#help .close:hover{color:#C9D1D9}
+#btn-help{background:#21262D;border:1px solid #30363D;color:#C9D1D9;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:13px;line-height:1.5}
+#btn-help:hover{background:#30363D;border-color:#8B949E}
 </style>
 </head>
 <body>
@@ -68,7 +79,24 @@ select{background:#0D1117;border:1px solid #30363D;color:#C9D1D9;padding:3px 6px
     <label>Ignore:</label>
     <select id="ignore-select" disabled><option value="">+ Add…</option></select>
     <div id="ignore-tags"></div>
+    <span class="sep"></span>
+    <button id="btn-help" title="Show help">?</button>
   </div>
+</div>
+
+<div id="help">
+  <button class="close" id="help-close" aria-label="Close help">&times;</button>
+  <h2>How to use</h2>
+  <ul>
+    <li><b>Root</b> — pick any content type (★ = has a <code>url</code> field)</li>
+    <li><b>Depth</b> — expand/contract the whole tree to a fixed level</li>
+    <li><b>Click a node</b> — toggle its children individually</li>
+    <li><b>Ignore</b> — hide up to 5 content types from the tree</li>
+    <li><b>Top-Down / Left-Right</b> — switch orientation</li>
+    <li><b>Reset View</b> — re-center and fit to screen</li>
+    <li><b>Scroll</b> to zoom, <b>drag</b> to pan</li>
+    <li>Dashed red nodes are cycles — already visited on this path</li>
+  </ul>
 </div>
 
 <div id="chart"></div>
@@ -424,6 +452,10 @@ document.getElementById("root-select").onchange = function() {
   updateIgnoreTags();
   renderCurrentRoot();
 };
+const helpEl = document.getElementById("help");
+document.getElementById("btn-help").onclick = () => helpEl.classList.toggle("hidden");
+document.getElementById("help-close").onclick = () => helpEl.classList.add("hidden");
+
 document.getElementById("ignore-select").onchange = function() {
   if (!this.value || ignoredTypes.size >= 5) { this.value = ""; return; }
   ignoredTypes.add(this.value);
