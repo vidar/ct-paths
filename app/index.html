@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reference Tree</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0D1117;color:#C9D1D9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;overflow:hidden;height:100vh}
+
+#header{position:fixed;top:0;left:0;right:0;z-index:100;background:#161B22;border-bottom:1px solid #30363D;padding:10px 20px;display:flex;align-items:center;gap:24px}
+#header h1{font-size:15px;font-weight:600;color:#58A6FF;white-space:nowrap}
+
+.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.controls label{font-size:13px;color:#8B949E;margin-right:2px}
+.controls input[type="number"]{width:48px;background:#0D1117;border:1px solid #30363D;color:#C9D1D9;padding:3px 6px;border-radius:4px;font-size:13px;text-align:center;-moz-appearance:textfield}
+.controls input[type="number"]::-webkit-outer-spin-button,
+.controls input[type="number"]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.controls button{background:#21262D;border:1px solid #30363D;color:#C9D1D9;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:13px;line-height:1.5}
+.controls button:hover{background:#30363D;border-color:#8B949E}
+.controls button:disabled{opacity:0.5;cursor:not-allowed}
+.sep{width:1px;height:20px;background:#30363D;margin:0 4px}
+
+select{background:#0D1117;border:1px solid #30363D;color:#C9D1D9;padding:3px 6px;border-radius:4px;font-size:13px;max-width:220px}
+
+#chart{position:fixed;top:44px;left:0;right:0;bottom:0}
+
+#status{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:50;padding:20px 28px;background:#161B22;border:1px solid #30363D;border-radius:8px;font-size:14px;color:#C9D1D9;max-width:560px;text-align:center;line-height:1.5}
+#status.error{border-color:#F85149;color:#F85149}
+#status.hidden{display:none}
+
+#legend{position:fixed;bottom:16px;left:16px;z-index:100;background:#161B22;border:1px solid #30363D;border-radius:8px;padding:10px 14px;font-size:11px}
+.legend-item{display:flex;align-items:center;gap:8px;margin:3px 0}
+.legend-swatch{width:14px;height:14px;border-radius:3px;border:2px solid;flex-shrink:0}
+
+.node{cursor:default}
+.node.expandable{cursor:pointer}
+.node.expandable:hover .node-rect{filter:brightness(1.4)}
+.link{fill:none;stroke:#8B949E;stroke-width:1.5}
+.edge-label{font-size:10px;fill:#8B949E;font-style:italic;pointer-events:none}
+.leaf-counter{font-size:13px;color:#7EE787;font-weight:600}
+#ignore-tags{display:flex;gap:4px;flex-wrap:wrap}
+.ignore-tag{background:#F8514933;border:1px solid #F85149;color:#F85149;padding:2px 8px;border-radius:4px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px}
+.ignore-tag:hover{background:#F8514966}
+</style>
+</head>
+<body>
+<div id="header">
+  <h1 id="title">Reference Tree</h1>
+  <div class="controls">
+    <label>Root:</label>
+    <select id="root-select" disabled><option>Loading…</option></select>
+    <span class="sep"></span>
+    <label>Depth:</label>
+    <button id="btn-minus">&#x2212;</button>
+    <input type="number" id="depth-input" value="2" min="0" max="0">
+    <button id="btn-plus">+</button>
+    <span class="sep"></span>
+    <button id="btn-expand">Expand All</button>
+    <button id="btn-collapse">Collapse All</button>
+    <span class="sep"></span>
+    <button id="btn-reset">Reset View</button>
+    <span class="sep"></span>
+    <button id="btn-orient">Top-Down</button>
+    <span class="sep"></span>
+    <span id="leaf-count" class="leaf-counter"></span>
+    <span class="sep"></span>
+    <label>Ignore:</label>
+    <select id="ignore-select" disabled><option value="">+ Add…</option></select>
+    <div id="ignore-tags"></div>
+  </div>
+</div>
+
+<div id="chart"></div>
+<div id="status">Initializing Contentstack App SDK…</div>
+
+<div id="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#58A6FF33;border-color:#58A6FF"></div>Root</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#7EE78733;border-color:#7EE787"></div>Intermediate</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#D2A8FF33;border-color:#D2A8FF"></div>Leaf</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#F8514933;border-color:#F85149;border-style:dashed"></div>Cycle</div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script type="module">
+import ContentstackAppSDK from "https://esm.sh/@contentstack/app-sdk@2";
+
+const COLORS = {root:"#58A6FF",intermediate:"#7EE787",leaf:"#D2A8FF",cycle:"#F85149",text:"#FFFFFF",edge:"#8B949E",bg:"#0D1117"};
+const NODE_H = 32;
+const CHAR_W = 8;
+const NODE_PAD = 24;
+
+const statusEl = document.getElementById("status");
+function setStatus(msg, isError) {
+  statusEl.textContent = msg;
+  statusEl.classList.toggle("error", !!isError);
+  statusEl.classList.remove("hidden");
+}
+function hideStatus() { statusEl.classList.add("hidden"); }
+
+/* ---------- schema walking (ported from generate_ref_graphs.py) ---------- */
+
+function hasUrlField(schema) {
+  return (schema || []).some(f => f.uid === "url");
+}
+
+function findRefs(fields, ctUid, blockTitle = "") {
+  const refs = [];
+  for (const fld of fields || []) {
+    const dt = fld.data_type || "";
+    if (dt === "reference" && Array.isArray(fld.reference_to)) {
+      for (const target of fld.reference_to) {
+        if (target !== "sys_assets") {
+          refs.push({
+            from: ctUid,
+            to: target,
+            field: fld.display_name || fld.uid,
+            block: blockTitle,
+          });
+        }
+      }
+    }
+    if (dt === "group" && fld.schema) {
+      refs.push(...findRefs(fld.schema, ctUid, blockTitle));
+    }
+    if (dt === "blocks" && Array.isArray(fld.blocks)) {
+      for (const block of fld.blocks) {
+        refs.push(...findRefs(block.schema || [], ctUid, block.title || block.uid));
+      }
+    }
+    if (dt === "global_field" && fld.schema) {
+      refs.push(...findRefs(fld.schema, ctUid, blockTitle));
+    }
+  }
+  return refs;
+}
+
+function buildCtMap(contentTypes) {
+  const m = new Map();
+  for (const ct of contentTypes) {
+    m.set(ct.uid, {
+      title: ct.title || ct.uid,
+      schema: ct.schema || [],
+      hasUrl: hasUrlField(ct.schema || []),
+    });
+  }
+  return m;
+}
+
+function buildRefGraph(contentTypes) {
+  const g = new Map();
+  for (const ct of contentTypes) {
+    const edges = findRefs(ct.schema || [], ct.uid);
+    if (edges.length) g.set(ct.uid, edges);
+  }
+  return g;
+}
+
+function buildRefTree(rootUid, ctMap, refGraph, maxDepth = null) {
+  const rootTitle = ctMap.get(rootUid)?.title || rootUid;
+  const root = { uid: rootUid, title: rootTitle, depth: 0, isCycle: false, edgeLabel: "", children: [] };
+
+  function expand(node, ancestors) {
+    const edges = refGraph.get(node.uid) || [];
+    const targets = new Map();
+    for (const e of edges) {
+      if (!targets.has(e.to)) targets.set(e.to, []);
+      const label = e.block || e.field;
+      if (!targets.get(e.to).includes(label)) targets.get(e.to).push(label);
+    }
+    for (const [targetUid, labels] of targets) {
+      const targetTitle = ctMap.get(targetUid)?.title || targetUid;
+      const isCycle = ancestors.has(targetUid);
+      const child = {
+        uid: targetUid,
+        title: targetTitle,
+        depth: node.depth + 1,
+        isCycle,
+        edgeLabel: "via " + labels.join(", "),
+        children: [],
+      };
+      node.children.push(child);
+      if (!isCycle && (maxDepth === null || child.depth < maxDepth)) {
+        expand(child, new Set([...ancestors, targetUid]));
+      }
+    }
+  }
+
+  expand(root, new Set([rootUid]));
+  return root;
+}
+
+function treeMaxDepth(node) {
+  if (!node.children || !node.children.length) return node.depth;
+  return Math.max(...node.children.map(treeMaxDepth));
+}
+
+/* ---------- D3 rendering ---------- */
+
+const svg = d3.select("#chart").append("svg").attr("width","100%").attr("height","100%");
+const g = svg.append("g");
+const zoomBehavior = d3.zoom().scaleExtent([0.05, 4]).on("zoom", e => g.attr("transform", e.transform));
+svg.call(zoomBehavior);
+const linkGroup = g.append("g");
+const labelGroup = g.append("g");
+const nodeGroup = g.append("g");
+
+let horizontal = true;
+const rx = d => horizontal ? d.y : d.x;
+const ry = d => horizontal ? d.x : d.y;
+const rxy = o => ({rx: horizontal ? o.y : o.x, ry: horizontal ? o.x : o.y});
+
+const layout = d3.tree();
+function applyLayout(){ layout.nodeSize(horizontal ? [50,250] : [140,120]); }
+applyLayout();
+
+let root = null;
+let idCtr = 0;
+let fullDepth = 0;
+let uniformDepth = true;
+let currentRootUid = null;
+let ignoredTypes = new Set();
+
+function nw(d) { const t = d.data.isCycle ? d.data.title + " \u21BA" : d.data.title; return Math.max(100, t.length * CHAR_W + NODE_PAD); }
+function nc(d) { if(d.depth===0) return COLORS.root; if(d.data.isCycle) return COLORS.cycle; if(d._children && d._children.length) return COLORS.intermediate; return COLORS.leaf; }
+function hasHidden(d) { return d._children && d._children.length > 0 && !d.children; }
+function visitAll(node, fn) { fn(node); if(node._children) node._children.forEach(c => visitAll(c, fn)); }
+function setVisibleDepth(depth) {
+  visitAll(root, d => {
+    if(d._children && d._children.length > 0)
+      d.children = d.depth < depth ? d._children : null;
+  });
+}
+function diag(s, t) {
+  const sx = rx(s), sy = ry(s), tx = rx(t), ty = ry(t);
+  const m = horizontal ? (sx+tx)/2 : (sy+ty)/2;
+  return horizontal
+    ? "M"+sx+","+sy+" C"+m+","+sy+" "+m+","+ty+" "+tx+","+ty
+    : "M"+sx+","+sy+" C"+sx+","+m+" "+tx+","+m+" "+tx+","+ty;
+}
+function countLeaves() {
+  let c = 0;
+  (function v(n){ if(!n.children||!n.children.length) c++; else n.children.forEach(v); })(root);
+  return c;
+}
+function updateLeafCounter() {
+  const el = document.getElementById("leaf-count");
+  if(uniformDepth){ el.textContent = "Leaves: "+countLeaves(); el.style.display = ""; }
+  else { el.style.display = "none"; }
+}
+
+function update(source) {
+  const dur = 400;
+  layout(root);
+  const nodes = root.descendants();
+  const links = root.links();
+
+  const node = nodeGroup.selectAll("g.node").data(nodes, d => d.id);
+  const s0 = rxy({x:source.x0||0,y:source.y0||0});
+  const ne = node.enter().append("g").attr("class","node")
+    .attr("transform","translate("+s0.rx+","+s0.ry+")")
+    .style("opacity",0)
+    .on("click", (ev, d) => {
+      if(!d._children || !d._children.length || d.data.isCycle) return;
+      d.children = d.children ? null : d._children;
+      update(d);
+      uniformDepth = false; updateLeafCounter();
+    });
+
+  ne.append("rect").attr("class","node-rect").attr("y",-NODE_H/2).attr("height",NODE_H).attr("rx",6).attr("ry",6);
+  ne.append("text").attr("class","node-title").attr("text-anchor","middle").attr("dy","0.35em")
+    .attr("fill",COLORS.text).attr("font-size","12px").attr("font-weight","bold")
+    .attr("font-family","-apple-system,BlinkMacSystemFont,sans-serif").attr("pointer-events","none");
+  ne.append("circle").attr("class","badge-circle");
+  ne.append("text").attr("class","badge-text").attr("text-anchor","middle").attr("pointer-events","none");
+  ne.append("title");
+
+  const nu = ne.merge(node);
+  nu.classed("expandable", d => d._children && d._children.length > 0 && !d.data.isCycle);
+  nu.transition().duration(dur).attr("transform", d => "translate("+rx(d)+","+ry(d)+")").style("opacity",1);
+
+  nu.select(".node-rect").attr("x", d => -nw(d)/2).attr("width", d => nw(d))
+    .attr("fill", d => nc(d)+"33").attr("stroke", d => nc(d)).attr("stroke-width",2)
+    .attr("stroke-dasharray", d => d.data.isCycle ? "6,3" : "none");
+  nu.select(".node-title").text(d => d.data.isCycle ? d.data.title+" \u21BA" : d.data.title);
+  nu.select("title").text(d => d.data.title+" ("+d.data.uid+")");
+
+  nu.select(".badge-circle").attr("cx", d => horizontal?nw(d)/2+10:0).attr("cy", d => horizontal?0:NODE_H/2+10).attr("r", d => hasHidden(d)?9:0).attr("fill", d => nc(d));
+  nu.select(".badge-text").attr("x", d => horizontal?nw(d)/2+10:0).attr("y", d => horizontal?0:NODE_H/2+10).attr("dy","0.35em").attr("font-size","9px").attr("font-weight","bold").attr("fill",COLORS.bg)
+    .text(d => hasHidden(d) ? "+"+d._children.length : "");
+
+  node.exit().transition().duration(dur)
+    .attr("transform","translate("+rx(source)+","+ry(source)+")").style("opacity",0).remove();
+
+  const link = linkGroup.selectAll("path.link").data(links, d => d.target.id);
+  const o0 = {x: source.x0||0, y: source.y0||0};
+  const le = link.enter().append("path").attr("class","link").attr("d", diag(o0,o0)).style("opacity",0);
+  le.merge(link).transition().duration(dur).attr("d", d => diag(d.source, d.target)).style("opacity",1)
+    .attr("stroke-dasharray", d => d.target.data.isCycle ? "6,3" : "none");
+  link.exit().transition().duration(dur).attr("d", diag({x:source.x,y:source.y},{x:source.x,y:source.y})).style("opacity",0).remove();
+
+  const el = labelGroup.selectAll("text.edge-label").data(links.filter(d => d.target.data.edgeLabel), d => d.target.id);
+  const ele = el.enter().append("text").attr("class","edge-label").attr("text-anchor","middle").attr("x",s0.rx).attr("y",s0.ry).style("opacity",0);
+  ele.merge(el).transition().duration(dur)
+    .attr("x", d => (rx(d.source)+rx(d.target))/2).attr("y", d => (ry(d.source)+ry(d.target))/2)
+    .style("opacity",1).text(d => d.target.data.edgeLabel);
+  el.exit().transition().duration(dur).style("opacity",0).remove();
+
+  nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
+}
+
+function setDepth(d) {
+  d = Math.max(0, Math.min(fullDepth, d));
+  document.getElementById("depth-input").value = d;
+  setVisibleDepth(d);
+  update(root);
+  uniformDepth = true; updateLeafCounter();
+}
+
+function resetView() {
+  const b = g.node().getBBox();
+  const p = svg.node().getBoundingClientRect();
+  if(b.width === 0 || b.height === 0) return;
+  const s = Math.min(p.width/(b.width+120), p.height/(b.height+120), 1.5);
+  const tx = p.width/2 - (b.x + b.width/2)*s;
+  const ty = p.height/2 - (b.y + b.height/2)*s;
+  svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
+}
+
+function filterTree(node) {
+  const kids = (node.children || []).filter(c => !ignoredTypes.has(c.uid)).map(filterTree);
+  return {uid:node.uid,title:node.title,depth:node.depth,isCycle:node.isCycle,edgeLabel:node.edgeLabel,children:kids};
+}
+
+/* ---------- app state & rendering ---------- */
+
+let ctMap = null;
+let refGraph = null;
+let rawTree = null;
+
+function renderCurrentRoot() {
+  rawTree = buildRefTree(currentRootUid, ctMap, refGraph, null);
+  fullDepth = treeMaxDepth(rawTree);
+
+  const depthInput = document.getElementById("depth-input");
+  depthInput.max = fullDepth;
+  const requested = Math.min(2, fullDepth);
+  depthInput.value = requested;
+
+  const filtered = filterTree(rawTree);
+  root = d3.hierarchy(filtered);
+  idCtr = 0;
+  root.each(d => { d.id = idCtr++; });
+  root.each(d => { d._children = d.children || null; });
+
+  nodeGroup.selectAll("*").remove();
+  linkGroup.selectAll("*").remove();
+  labelGroup.selectAll("*").remove();
+
+  setVisibleDepth(requested);
+  uniformDepth = true;
+  root.x0 = 0; root.y0 = 0;
+  update(root);
+  updateLeafCounter();
+  requestAnimationFrame(() => requestAnimationFrame(resetView));
+
+  document.getElementById("title").textContent = (ctMap.get(currentRootUid)?.title || currentRootUid) + " — Reference Tree";
+  refreshIgnoreSelect();
+}
+
+function refreshIgnoreSelect() {
+  const sel = document.getElementById("ignore-select");
+  sel.innerHTML = '<option value="">+ Add…</option>';
+  const entries = [...ctMap.entries()]
+    .filter(([uid]) => uid !== currentRootUid)
+    .sort((a, b) => a[1].title.localeCompare(b[1].title));
+  for (const [uid, info] of entries) {
+    const opt = document.createElement("option");
+    opt.value = uid;
+    opt.textContent = info.title;
+    if (ignoredTypes.has(uid)) opt.disabled = true;
+    sel.appendChild(opt);
+  }
+  sel.disabled = ignoredTypes.size >= 5;
+}
+
+function updateIgnoreTags() {
+  const container = document.getElementById("ignore-tags");
+  container.innerHTML = "";
+  for (const uid of ignoredTypes) {
+    const tag = document.createElement("span");
+    tag.className = "ignore-tag";
+    tag.textContent = (ctMap.get(uid)?.title || uid) + " \u00d7";
+    tag.onclick = () => { ignoredTypes.delete(uid); updateIgnoreTags(); renderCurrentRoot(); };
+    container.appendChild(tag);
+  }
+  refreshIgnoreSelect();
+}
+
+/* ---------- controls wiring ---------- */
+
+document.getElementById("btn-minus").onclick = () => setDepth(+document.getElementById("depth-input").value - 1);
+document.getElementById("btn-plus").onclick = () => setDepth(+document.getElementById("depth-input").value + 1);
+document.getElementById("btn-expand").onclick = () => setDepth(fullDepth);
+document.getElementById("btn-collapse").onclick = () => setDepth(0);
+document.getElementById("btn-reset").onclick = resetView;
+document.getElementById("depth-input").onchange = function(){ setDepth(+this.value); };
+document.getElementById("btn-orient").onclick = function() {
+  horizontal = !horizontal;
+  this.textContent = horizontal ? "Top-Down" : "Left-Right";
+  applyLayout();
+  if (root) {
+    nodeGroup.selectAll("*").remove();
+    linkGroup.selectAll("*").remove();
+    labelGroup.selectAll("*").remove();
+    root.x0 = 0; root.y0 = 0;
+    update(root);
+    requestAnimationFrame(() => requestAnimationFrame(resetView));
+  }
+};
+document.getElementById("root-select").onchange = function() {
+  currentRootUid = this.value;
+  ignoredTypes = new Set();
+  updateIgnoreTags();
+  renderCurrentRoot();
+};
+document.getElementById("ignore-select").onchange = function() {
+  if (!this.value || ignoredTypes.size >= 5) { this.value = ""; return; }
+  ignoredTypes.add(this.value);
+  this.value = "";
+  updateIgnoreTags();
+  renderCurrentRoot();
+};
+
+/* ---------- boot ---------- */
+
+function pickDefaultRoot(ctMap) {
+  for (const [uid, info] of ctMap) if (info.hasUrl) return uid;
+  const first = [...ctMap.keys()].sort()[0];
+  return first || null;
+}
+
+async function fetchAllContentTypes(stack) {
+  const params = { include_global_field_schema: true };
+  const out = [];
+  const limit = 100;
+  let skip = 0;
+  while (true) {
+    const resp = await stack.getContentTypes({}, { ...params, limit, skip });
+    const batch = Array.isArray(resp) ? resp : (resp?.content_types || []);
+    if (!batch.length) break;
+    out.push(...batch);
+    if (batch.length < limit) break;
+    skip += batch.length;
+  }
+  return out;
+}
+
+async function boot() {
+  try {
+    setStatus("Initializing Contentstack App SDK…");
+    const sdk = await ContentstackAppSDK.init();
+    const fullPage = sdk.location?.FullPage;
+    if (!fullPage) throw new Error("This app must be installed as a Full Page location.");
+
+    setStatus("Fetching content types…");
+    const contentTypes = await fetchAllContentTypes(fullPage.stack);
+    if (!contentTypes.length) throw new Error("No content types returned from the stack.");
+
+    ctMap = buildCtMap(contentTypes);
+    refGraph = buildRefGraph(contentTypes);
+
+    const sel = document.getElementById("root-select");
+    sel.innerHTML = "";
+    const sortedEntries = [...ctMap.entries()].sort((a, b) => a[1].title.localeCompare(b[1].title));
+    for (const [uid, info] of sortedEntries) {
+      const opt = document.createElement("option");
+      opt.value = uid;
+      opt.textContent = info.hasUrl ? info.title + " \u2605" : info.title;
+      sel.appendChild(opt);
+    }
+    sel.disabled = false;
+    document.getElementById("ignore-select").disabled = false;
+
+    currentRootUid = pickDefaultRoot(ctMap);
+    sel.value = currentRootUid;
+
+    hideStatus();
+    renderCurrentRoot();
+  } catch (err) {
+    console.error(err);
+    setStatus("Error: " + (err?.message || String(err)), true);
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
